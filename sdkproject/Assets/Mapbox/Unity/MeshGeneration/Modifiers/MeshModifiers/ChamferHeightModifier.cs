@@ -23,14 +23,6 @@
 			if (md.Vertices.Count == 0 || feature == null || feature.Points.Count < 1)
 				return;
 
-			var originalVertexCount = md.Vertices.Count;
-			Chamfer(feature, md, tile);
-
-			Sides(feature, md, originalVertexCount);
-		}
-
-		private void Sides(VectorFeatureUnity feature, MeshData meshData, int originalVertexCount)
-		{
 			var minHeight = 0f;
 			float hf = _height;
 
@@ -39,19 +31,29 @@
 				GetHeightData(feature, ref minHeight, ref hf);
 			}
 
-			var max = meshData.Vertices[0].y;
-			var min = meshData.Vertices[0].y;
+			var max = md.Vertices[0].y;
+			var min = md.Vertices[0].y;
 			if (_flatTops)
 			{
-				FlattenTops(meshData, minHeight, ref hf, ref max, ref min);
+				FlattenTops(md, minHeight, ref hf, ref max, ref min);
 			}
 			else
 			{
-				for (int i = 0; i < meshData.Vertices.Count; i++)
+				for (int i = 0; i < md.Vertices.Count; i++)
 				{
-					meshData.Vertices[i] = new Vector3(meshData.Vertices[i].x, meshData.Vertices[i].y + minHeight + hf, meshData.Vertices[i].z);
+					md.Vertices[i] = new Vector3(md.Vertices[i].x, md.Vertices[i].y + minHeight + hf, md.Vertices[i].z);
 				}
 			}
+
+			var originalVertexCount = md.Vertices.Count;
+			Chamfer(feature, md, tile);
+
+			Sides(feature, md, hf, originalVertexCount);
+		}
+
+		private void Sides(VectorFeatureUnity feature, MeshData meshData, float hf, int originalVertexCount)
+		{
+
 
 			float d = 0f;
 			Vector3 v1;
@@ -151,91 +153,103 @@
 				md.Triangles[0][t] *= 3;
 			}
 
-			var i = 0; var j = 0; var k = 0;
+			var next = 0; var current = 0; var prev = 0;
 			Vector3 v1, v2, n1, n2, pij1, pij2, pjk1, pjk2;
 			Vector3 poi, close1, close2;
-			for (int e = 0; e < md.PointEdges.Count; e++)
+
+			var start = 0;
+			for (int i = 0; i < feature.Points.Count; i++)
 			{
-				if (md.PointEdges[e][0] == -1)
+				var count = feature.Points[i].Count;
+				var cst = newVertices.Count;
+				for (int j = 0; j < count; j++)
 				{
-					newVertices.Add(Vector3.zero);
-					newVertices.Add(Vector3.zero);
-					newVertices.Add(Vector3.zero);
-					newUV.Add(new Vector2(0, 0));
-					newUV.Add(new Vector2(0, 0));
-					newUV.Add(new Vector2(0, 0));
+					if (j == count - 1)
+					{
+						newVertices.Add(newVertices[cst]);
+						newVertices.Add(newVertices[cst + 1]);
+						newVertices.Add(newVertices[cst + 2]);
+						newUV.Add(newUV[cst]);
+						newUV.Add(newUV[cst + 1]);
+						newUV.Add(newUV[cst + 2]);
+						md.Normals.Add(md.Normals[cst]);
+						md.Normals.Add(md.Normals[cst + 1]);
+						md.Normals.Add(md.Normals[cst + 2]);
+						continue;
+					}
+
+					current = start + j;
+					if (j > 0)
+						next = start + j - 1;
+					else
+						next = start + j - 1 + count - 1; //another -1  as last item equals first
+					prev = start + j + 1;
+
+
+					v1 = new Vector3(
+							md.Vertices[current].x - md.Vertices[next].x, 0,
+							md.Vertices[current].z - md.Vertices[next].z);
+					v1.Normalize();
+					v1 *= -_offset;
+					n1 = new Vector3(-v1.z, 0, v1.x);
+
+					pij1 = new Vector3(
+						(float)(md.Vertices[next].x + n1.x), 0,
+						(float)(md.Vertices[next].z + n1.z));
+					pij2 = new Vector3(
+						(float)(md.Vertices[current].x + n1.x), 0,
+						(float)(md.Vertices[current].z + n1.z));
+
+					v2 = new Vector3(
+						md.Vertices[prev].x - md.Vertices[current].x, 0,
+						md.Vertices[prev].z - md.Vertices[current].z);
+
+					v2.Normalize();
+					v2 *= -_offset;
+					n2 = new Vector3(-v2.z, 0, v2.x);
+					pjk1 = new Vector3(
+						(float)(md.Vertices[current].x + n2.x), 0,
+						(float)(md.Vertices[current].z + n2.z));
+					pjk2 = new Vector3(
+						(float)(md.Vertices[prev].x + n2.x), 0,
+						(float)(md.Vertices[prev].z + n2.z));
+
+					// See where the shifted lines ij and jk intersect.
+					bool lines_intersect, segments_intersect;
+
+					FindIntersection(pij1, pij2, pjk1, pjk2,
+						out lines_intersect, out segments_intersect,
+						out poi, out close1, out close2);
+
+					newVertices.Add(poi + new Vector3(0, _offset, 0) + new Vector3(0, md.Vertices[i].y, 0));
+					newVertices.Add(md.Vertices[current] + v1);
+					newVertices.Add(md.Vertices[current] - v2);
 					md.Normals.Add(Constants.Math.Vector3Up);
-					md.Normals.Add(Constants.Math.Vector3Up);
-					md.Normals.Add(Constants.Math.Vector3Up);
-					continue;
+					md.Normals.Add(-n1);
+					md.Normals.Add(-n2);
+					newUV.Add(md.UV[0][current]);
+					newUV.Add(md.UV[0][current]);
+					newUV.Add(md.UV[0][current]);
+
+					md.Triangles[0].Add(3 * current);
+					md.Triangles[0].Add(3 * current + 1);
+					md.Triangles[0].Add(3 * current + 2);
+
+					md.Edges.Add(3 * current + 2);
+					md.Edges.Add(3 * current + 1);
+
+					md.Triangles[0].Add(3 * prev);
+					md.Triangles[0].Add(3 * current + 2);
+					md.Triangles[0].Add(3 * prev + 1);
+
+					md.Triangles[0].Add(3 * current);
+					md.Triangles[0].Add(3 * current + 2);
+					md.Triangles[0].Add(3 * prev);
+					//Debug.Log(i + " - " + j + " - " + k);
+					md.Edges.Add(3 * prev + 1);
+					md.Edges.Add(3 * current + 2);
 				}
-
-				j = e;
-				k = md.PointEdges[e][0];
-				i = md.PointEdges[e][1];
-
-				v1 = new Vector3(
-						md.Vertices[j].x - md.Vertices[i].x, 0,
-						md.Vertices[j].z - md.Vertices[i].z);
-				v1.Normalize();
-				v1 *= -_offset;
-				n1 = new Vector3(-v1.z, 0, v1.x);
-
-				pij1 = new Vector3(
-					(float)(md.Vertices[i].x + n1.x), 0,
-					(float)(md.Vertices[i].z + n1.z));
-				pij2 = new Vector3(
-					(float)(md.Vertices[j].x + n1.x), 0,
-					(float)(md.Vertices[j].z + n1.z));
-
-				v2 = new Vector3(
-					md.Vertices[k].x - md.Vertices[j].x, 0,
-					md.Vertices[k].z - md.Vertices[j].z);
-				
-				v2.Normalize();
-				v2 *= -_offset;
-				n2 = new Vector3(-v2.z, 0, v2.x);
-				pjk1 = new Vector3(
-					(float)(md.Vertices[j].x + n2.x), 0,
-					(float)(md.Vertices[j].z + n2.z));
-				pjk2 = new Vector3(
-					(float)(md.Vertices[k].x + n2.x), 0,
-					(float)(md.Vertices[k].z + n2.z));
-
-				// See where the shifted lines ij and jk intersect.
-				bool lines_intersect, segments_intersect;
-
-				FindIntersection(pij1, pij2, pjk1, pjk2,
-					out lines_intersect, out segments_intersect,
-					out poi, out close1, out close2);
-
-				newVertices.Add(poi + new Vector3(0, _offset / 2, 0));
-				newVertices.Add(md.Vertices[j] + v1);
-				newVertices.Add(md.Vertices[j] - v2);
-				md.Normals.Add(Constants.Math.Vector3Up);
-				md.Normals.Add(-n1);
-				md.Normals.Add(-n2);
-				newUV.Add(md.UV[0][j]);
-				newUV.Add(md.UV[0][j]);
-				newUV.Add(md.UV[0][j]);
-
-				md.Triangles[0].Add(3 * j);
-				md.Triangles[0].Add(3 * j + 1);
-				md.Triangles[0].Add(3 * j + 2);
-
-				md.Edges.Add(3 * j + 2);
-				md.Edges.Add(3 * j + 1);
-
-				md.Triangles[0].Add(3 * k);
-				md.Triangles[0].Add(3 * j + 2);
-				md.Triangles[0].Add(3 * k + 1);
-
-				md.Triangles[0].Add(3 * j);
-				md.Triangles[0].Add(3 * j + 2);
-				md.Triangles[0].Add(3 * k);
-				//Debug.Log(i + " - " + j + " - " + k);
-				md.Edges.Add(3 * k + 1);
-				md.Edges.Add(3 * j + 2);
+				start += count;
 			}
 
 			md.Vertices = newVertices;

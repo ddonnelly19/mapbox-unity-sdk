@@ -9,6 +9,7 @@ namespace Mapbox.Unity.MeshGeneration.Modifiers
 	using TriangleNet.Meshing;
 	using System;
 	using TriangleNet.Smoothing;
+	using Assets.Mapbox.Unity.MeshGeneration.Modifiers.MeshModifiers;
 
 	/// <summary>
 	/// Polygon modifier creates the polygon (vertex&triangles) using the original vertex list.
@@ -18,16 +19,13 @@ namespace Mapbox.Unity.MeshGeneration.Modifiers
 	public class PolygonMeshModifier : MeshModifier
 	{
 		public override ModifierType Type { get { return ModifierType.Preprocess; } }
-		private ConstraintOptions options;
-		private QualityOptions quality;
 		private int counter = 0;
+		private EarcutLibrary _library;
 
 		public void OnEnable()
 		{
-			options = new ConstraintOptions() { ConformingDelaunay = true };
-			quality = new QualityOptions() { MinimumAngle = 25.0 };
-			quality.MaximumArea = 100;
 			counter = 0;
+			_library = new EarcutLibrary();
 		}
 
 		public bool IsClockwise(IList<Vector3> vertices)
@@ -36,7 +34,7 @@ namespace Mapbox.Unity.MeshGeneration.Modifiers
 			for (int i = 0; i < vertices.Count; i++)
 			{
 				Vector3 v1 = vertices[i];
-				Vector3 v2 = vertices[(i + 1) % vertices.Count]; // % is the modulo operator
+				Vector3 v2 = vertices[(i + 1) % vertices.Count];
 				sum += (v2.x - v1.x) * (v2.z + v1.z);
 			}
 			return sum > 0.0;
@@ -44,143 +42,63 @@ namespace Mapbox.Unity.MeshGeneration.Modifiers
 
 		public override void Run(VectorFeatureUnity feature, MeshData md, UnityTile tile = null)
 		{
-			if (feature.Points[0].Count() < 3 || feature.Points[0][0] == Vector3.zero)
-				return;
-
-			var data = new List<int>();
-			var polygon = new Polygon();
-			Vertex firstVert = null;
-			Vertex nextVert = null;
-			Vertex currentVert = null;
+			List<List<Vector3>> set = new List<List<Vector3>>();
+			Data data = null;
+			List<int> rest = null;
+			var st = 0;
 			md.Triangles.Add(new List<int>());
-
 			foreach (var sub in feature.Points)
 			{
 				if (IsClockwise(sub))
 				{
-					if (firstVert != null)
+					if (md.Vertices.Count > 0)
 					{
-						Triangulate(md, polygon);
-						polygon = new Polygon();
-						firstVert = null;
-						nextVert = null;
-						currentVert = null;
-						nextVert = AdditivePolygon(polygon, ref firstVert, ref currentVert, sub);
+						data = _library.Flatten(set);
+						rest = _library.Earcut(data.Vertices, data.Holes, data.Dim);
+						md.Triangles[0].AddRange(rest.Select(x => x + st).ToList());
+						st = md.Vertices.Count;
+
+						set.Clear();
+						set.Add(sub);
+						var c = md.Vertices.Count;
+						for (int i = 0; i < sub.Count; i++)
+						{
+							md.Edges.Add(c + ((i + 1) % sub.Count));
+							md.Edges.Add(c + i);
+							md.Vertices.Add(sub[i]);
+							md.Normals.Add(Constants.Math.Vector3Up);
+						}
 					}
 					else
 					{
-						nextVert = AdditivePolygon(polygon, ref firstVert, ref currentVert, sub);
+						set.Add(sub);
+						var c = md.Vertices.Count;
+						for (int i = 0; i < sub.Count; i++)
+						{
+							md.Edges.Add(c + ((i + 1) % sub.Count));
+							md.Edges.Add(c + i);
+							md.Vertices.Add(sub[i]);
+							md.Normals.Add(Constants.Math.Vector3Up);
+						}
 					}
 				}
 				else
 				{
-					SubsPolygon(polygon, sub);
-				}
-			}
-
-			Triangulate(md, polygon);
-		}
-
-		private static void SubsPolygon(Polygon polygon, List<Vector3> sub)
-		{
-			var cont = new List<Vertex>();
-			var wist = new List<Vector3>();
-			for (int i = 0; i < sub.Count; i++)
-			{
-				wist.Add(sub[i]);
-				cont.Add(new Vertex(sub[i].x, sub[i].y, sub[i].z));
-			}
-			polygon.Add(new Contour(cont), true);
-		}
-
-		private static Vertex AdditivePolygon(Polygon polygon, ref Vertex firstVert, ref Vertex currentVert, List<Vector3> sub)
-		{
-			Vertex nextVert = null;
-			for (int i = 0; i < sub.Count; i++)
-			{
-				if (nextVert == null)
-				{
-					currentVert = new Vertex(sub[i].x, sub[i].y, sub[i].z);
-					nextVert = new Vertex(sub[i + 1].x, sub[i].y, sub[i + 1].z);
-				}
-				else
-				{
-					currentVert = nextVert;
-					if (i == sub.Count - 1)
+					set.Add(sub);
+					var c = md.Vertices.Count;
+					for (int i = 0; i < sub.Count; i++)
 					{
-						nextVert = firstVert;
-					}
-					else
-					{
-						nextVert = new Vertex(sub[i + 1].x, sub[i + 1].y, sub[i + 1].z);
+						md.Edges.Add(c + ((i + 1) % sub.Count));
+						md.Edges.Add(c + i);
+						md.Vertices.Add(sub[i]);
+						md.Normals.Add(Constants.Math.Vector3Up);
 					}
 				}
-
-				if (i == 0)
-					firstVert = currentVert;
-
-				polygon.Add(currentVert);
-				polygon.Add(new Segment(currentVert, nextVert));
 			}
 
-			return nextVert;
-		}
-
-		private static void Triangulate(MeshData md, Polygon polygon)
-		{
-			var mesh = polygon.Triangulate();
-			//smoother mesh with smaller triangles and extra vertices in the middle
-			//var mesh = (TriangleNet.Mesh)polygon.Triangulate(options, quality);
-
-			var startIndex = md.Vertices.Count;
-			var data = new List<int>();
-			foreach (var tri in mesh.Triangles)
-			{
-				data.Add(startIndex + tri.GetVertexID(0));
-				data.Add(startIndex + tri.GetVertexID(2));
-				data.Add(startIndex + tri.GetVertexID(1));
-			}
-
-			for (int i = 0; i < mesh.Vertices.Count; i++)
-			{
-				md.PointEdges.Add(new int[2] { -1, -1 });
-			}
-
-			foreach (var edge in mesh.Edges)
-			{
-				if (edge.Label == 0)
-					continue;
-
-				var i1 = edge.P0;
-				var i2 = edge.P1;
-				if (md.PointEdges[i1][1] == -1)
-					md.PointEdges[i1][1] = i2;
-
-				if (md.PointEdges[i2][0] == -1)
-					md.PointEdges[i2][0] = i1;
-			}
-			if (md.PointEdges[md.PointEdges.Count - 1][0] == -1)
-				md.PointEdges.RemoveAt(md.PointEdges.Count - 1);
-
-			foreach (var edge in mesh.Edges)
-			{
-				if (edge.Label == 0)
-					continue;
-
-				md.Edges.Add(edge.P0);
-				md.Edges.Add(edge.P1);
-			}
-
-			using (var sequenceEnum = mesh.Vertices.GetEnumerator())
-			{
-				while (sequenceEnum.MoveNext())
-				{
-					md.Vertices.Add(new Vector3((float)sequenceEnum.Current.x, (float)sequenceEnum.Current.z, (float)sequenceEnum.Current.y));
-					md.Normals.Add(Constants.Math.Vector3Up);
-				}
-			}
-
-			md.Triangles[0].AddRange(data);
+			data = _library.Flatten(set);
+			rest = _library.Earcut(data.Vertices, data.Holes, data.Dim);
+			md.Triangles[0].AddRange(rest.Select(x => x + st).ToList());
 		}
 	}
 }
